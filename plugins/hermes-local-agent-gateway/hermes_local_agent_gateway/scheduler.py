@@ -62,7 +62,11 @@ def run_next_queue_task(
 
     try:
         payload = record["payload"]
-        actual_runner = runner or CodexCliRunner(codex_executable=cfg.codex_executable)
+        actual_runner = runner or CodexCliRunner(
+            codex_executable=cfg.codex_executable,
+            extra_env=cfg.codex_env or {},
+            max_output_bytes=cfg.max_output_bytes,
+        )
         result = create_codex_task(
             cfg,
             runner=actual_runner,
@@ -127,7 +131,7 @@ def ensure_worker_cron_job(
         if job.get("name") == name:
             job_id = job.get("id") or job.get("job_id")
             if (
-                job.get("prompt") != DEFAULT_WORKER_PROMPT
+                not _job_prompt_matches(job)
                 or job.get("script") != WAKE_SCRIPT_NAME
                 or job.get("enabled_toolsets") != [
                     "hermes_local_agent_gateway"
@@ -186,6 +190,18 @@ def _load_cron_api():
     from tools.cronjob_tools import cronjob
 
     return cronjob
+
+
+def _job_prompt_matches(job: dict[str, Any]) -> bool:
+    if "prompt" in job:
+        return job.get("prompt") == DEFAULT_WORKER_PROMPT
+    prompt_preview = job.get("prompt_preview")
+    if not isinstance(prompt_preview, str):
+        return False
+    expected_preview = DEFAULT_WORKER_PROMPT[:100]
+    if len(DEFAULT_WORKER_PROMPT) > 100:
+        expected_preview += "..."
+    return prompt_preview == expected_preview
 
 
 def _default_scripts_dir() -> Path:

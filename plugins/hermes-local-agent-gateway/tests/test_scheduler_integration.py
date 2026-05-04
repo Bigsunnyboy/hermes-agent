@@ -361,6 +361,47 @@ def test_ensure_worker_cron_job_reuses_existing_job_by_name(tmp_path: Path) -> N
     assert calls[1]["script"] == "codex_queue_worker_wake.py"
 
 
+def test_ensure_worker_cron_job_reuses_formatted_cron_listing(tmp_path: Path) -> None:
+    from hermes_local_agent_gateway.scheduler import DEFAULT_WORKER_PROMPT
+
+    calls = []
+    prompt_preview = DEFAULT_WORKER_PROMPT[:100] + "..."
+
+    def fake_cron(**kwargs):
+        calls.append(kwargs)
+        if kwargs["action"] == "list":
+            return json.dumps(
+                {
+                    "success": True,
+                    "jobs": [
+                        {
+                            "job_id": "job-existing",
+                            "name": "codex-queue-worker",
+                            "prompt_preview": prompt_preview,
+                            "script": "codex_queue_worker_wake.py",
+                            "enabled_toolsets": ["hermes_local_agent_gateway"],
+                        }
+                    ],
+                }
+            )
+        raise AssertionError(f"unexpected cron action: {kwargs}")
+
+    result = ensure_worker_cron_job(
+        cron_api=fake_cron,
+        name="codex-queue-worker",
+        schedule="every 1m",
+        scripts_dir=tmp_path / "scripts",
+    )
+
+    assert result == {
+        "created": False,
+        "updated": False,
+        "job_id": "job-existing",
+        "name": "codex-queue-worker",
+    }
+    assert len(calls) == 1
+
+
 def test_ensure_worker_cron_job_updates_stale_prompt(tmp_path: Path) -> None:
     calls = []
 

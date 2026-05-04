@@ -173,7 +173,11 @@ def _handle_create_codex_task(args: dict, **_: object) -> str:
 
     try:
         cfg = load_config()
-        runner = CodexCliRunner(codex_executable=cfg.codex_executable)
+        runner = CodexCliRunner(
+            codex_executable=cfg.codex_executable,
+            extra_env=cfg.codex_env or {},
+            max_output_bytes=cfg.max_output_bytes,
+        )
         result = create_codex_task(
             cfg,
             runner=runner,

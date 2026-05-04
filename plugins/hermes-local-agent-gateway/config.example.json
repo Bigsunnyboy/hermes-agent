@@ -10,6 +10,8 @@
   "worktree_archive_root": "/root/.hermes/worktree_archives",
   "session_root": "/root/.hermes/agent_sessions",
   "codex_executable": "codex",
+  "codex_env": {},
+  "max_output_bytes": 10485760,
   "max_workspaces": 20,
   "max_worktree_bytes": 5368709120,
   "worker_cron_name": "codex-queue-worker",

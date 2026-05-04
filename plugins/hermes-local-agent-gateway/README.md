@@ -32,6 +32,8 @@ Current implemented slice:
 24. Replace raw Feishu `open_id` operator text with the resolved sender name when the synthetic `/card` command path has a sender profile; raw `ou_...` identifiers are omitted from the immediate callback card.
 25. Block critical write tasks that target protected governance paths such as `.hermes`, `.codex`, `.omx`, `.git`, the Hermes official source tree, or this gateway plugin.
 26. Enforce optional Feishu approval policy with `approval_allowed_user_ids` and `approval_allowed_chat_ids`; when either list is non-empty, approve/reject commands and card clicks must match the configured users/chats.
+27. Support explicit Codex subprocess environment overrides with `codex_env`, while keeping the managed `CODEX_HOME` protected.
+28. Cap captured Codex stdout/stderr artifact size with `max_output_bytes` so runaway output cannot fill the task artifact directory.
 
 ## Enable
 
@@ -126,7 +128,15 @@ ensure_codex_worker_cron
 
 The created cron job uses `~/.hermes/scripts/codex_queue_worker_wake.py` as a wake gate. Empty queues return `{"wakeAgent": false}` so Hermes skips the agent run; non-empty queues wake the cron job and call `run_next_codex_task` once. When a task came from Feishu, the queue record contains the original chat target, and `run_next_codex_task` sends the final summary back to that chat after Codex finishes.
 
-Codex subprocesses launched by this gateway use a managed `CODEX_HOME` at `~/.hermes/codex_home`. The gateway links the existing Codex authentication file and writes a sanitized config with only model-related settings. It intentionally does not load user-level `hooks.json`, `notify`, OMX MCP servers, or OMX developer instructions, because those hooks can create `.omx/` and `.gitignore` inside the target worktree before the task itself runs.
+This means the one-minute schedule does not spend model tokens while the queue
+is empty. Non-empty queue ticks intentionally wake the Hermes agent instead of
+running the worker entirely inside the wake script, because the tool path runs
+inside the live gateway process and can update the original Feishu approval
+card through the active adapter. A script-only worker would save that one agent
+turn but would lose the verified card lifecycle path and fall back to less rich
+delivery.
+
+Codex subprocesses launched by this gateway use a managed `CODEX_HOME` at `~/.hermes/codex_home`. The gateway links the existing Codex authentication file and writes a sanitized config with only model-related settings. It intentionally does not load user-level `hooks.json`, `notify`, OMX MCP servers, or OMX developer instructions, because those hooks can create `.omx/` and `.gitignore` inside the target worktree before the task itself runs. If the gateway service needs explicit proxy variables for Codex, set non-secret values in `codex_env`; this is merged into the Codex subprocess environment after the service environment is copied, but `CODEX_HOME` remains managed by the gateway.
 
 ## Default Config
 
@@ -143,6 +153,8 @@ If `config.json` is absent, defaults are:
   "worktree_archive_root": "~/.hermes/worktree_archives",
   "session_root": "~/.hermes/agent_sessions",
   "codex_executable": "codex",
+  "codex_env": {},
+  "max_output_bytes": 10485760,
   "max_workspaces": 20,
   "max_worktree_bytes": 5368709120,
   "worker_cron_name": "codex-queue-worker",

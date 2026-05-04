@@ -231,6 +231,49 @@ def test_deliver_task_result_extracts_nested_codex_agent_message(tmp_path: Path)
     assert "Artifacts:" not in sends[0]["message"]
 
 
+def test_deliver_task_result_preserves_multiple_assistant_messages(tmp_path: Path) -> None:
+    queue = FileTaskQueue(tmp_path / "queue")
+    artifact_dir = tmp_path / "artifacts" / "task-1"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "codex_stdout.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"type": "agent_message", "message": "First useful result."}),
+                json.dumps({"type": "agent_message", "message": "Second useful result."}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    queued = queue.enqueue(
+        {
+            "repo": "data-agent",
+            "mode": "read",
+            "prompt": "Analyze.",
+            "delivery": {"platform": "feishu", "chat_id": "oc_123"},
+        }
+    )
+    queue.complete(
+        queued["task_id"],
+        {
+            "success": True,
+            "status": "DONE",
+            "artifact_dir": str(artifact_dir),
+            "returncode": 0,
+        },
+    )
+    sends = []
+
+    result = deliver_task_result(
+        queue,
+        task_id=queued["task_id"],
+        adapter_sender=lambda **kwargs: sends.append(kwargs) or {"success": True},
+    )
+
+    assert result["status"] == "DELIVERED"
+    assert sends[0]["message"] == "First useful result.\n\nSecond useful result."
+
+
 def test_deliver_task_result_is_idempotent_after_success(tmp_path: Path) -> None:
     queue = FileTaskQueue(tmp_path / "queue")
     queued = queue.enqueue(

@@ -3,9 +3,14 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 import time
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
+
+
+DEFAULT_MAX_OUTPUT_BYTES = 10 * 1024 * 1024
 
 
 class CodexCliRunner:
@@ -15,10 +20,14 @@ class CodexCliRunner:
         codex_executable: str,
         codex_home: Path | None = None,
         source_codex_home: Path | None = None,
+        extra_env: dict[str, str] | None = None,
+        max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
     ) -> None:
         self.codex_executable = codex_executable
         self.codex_home = codex_home or _default_gateway_codex_home()
         self.source_codex_home = source_codex_home or _default_source_codex_home()
+        self.extra_env = dict(extra_env or {})
+        self.max_output_bytes = max(int(max_output_bytes), 0)
 
     def build_command(
         self,
@@ -62,25 +71,58 @@ class CodexCliRunner:
         )
         started = time.monotonic()
         with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open("w", encoding="utf-8") as stderr:
-            completed = subprocess.run(
+            process = subprocess.Popen(
                 command,
                 text=True,
-                stdout=stdout,
-                stderr=stderr,
-                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 env=self.build_env(),
             )
+            stdout_thread = threading.Thread(
+                target=_copy_limited_stream,
+                args=(process.stdout, stdout, self.max_output_bytes),
+            )
+            stderr_thread = threading.Thread(
+                target=_copy_limited_stream,
+                args=(process.stderr, stderr, self.max_output_bytes),
+            )
+            stdout_thread.start()
+            stderr_thread.start()
+            returncode = process.wait()
+            stdout_thread.join()
+            stderr_thread.join()
         return {
             "command": command,
-            "returncode": completed.returncode,
+            "returncode": returncode,
             "duration_seconds": round(time.monotonic() - started, 3),
             "codex_session_id": _extract_thread_id(stdout_path),
         }
 
     def build_env(self) -> dict[str, str]:
         env = os.environ.copy()
+        env.update(self.extra_env)
         env["CODEX_HOME"] = str(_prepare_gateway_codex_home(self.codex_home, self.source_codex_home))
         return env
+
+
+def _copy_limited_stream(source: Iterator[str] | None, target: TextIO, limit: int) -> None:
+    if source is None:
+        return
+    written = 0
+    truncated = False
+    for chunk in source:
+        encoded = chunk.encode("utf-8")
+        if limit <= 0 or written + len(encoded) <= limit:
+            target.write(chunk)
+            written += len(encoded)
+            continue
+        remaining = max(limit - written, 0)
+        if remaining:
+            target.write(encoded[:remaining].decode("utf-8", errors="ignore"))
+            written = limit
+        if not truncated:
+            target.write("\n[output truncated by hermes-local-agent-gateway]\n")
+            truncated = True
 
 
 def _default_gateway_codex_home() -> Path:

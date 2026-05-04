@@ -7,8 +7,9 @@ _SENSITIVE_PATTERN = re.compile(
     r"(?i)(^|[\s/])(\.env|auth\.json|credentials?[^\s]*|[^\s]*secret[^\s]*|[^\s]*\.key)(?=$|[\s,.;/])"
 )
 _DESTRUCTIVE_PATTERN = re.compile(
-    r"(?i)(rm\s+-rf|git\s+push\s+--force|drop\s+database|delete\s+.*database|chmod\s+777|sudo\s+)"
+    r"(?i)(rm\s+-rf|git\s+push\s+--force|drop\s+database|delete\s+.*database|chmod\s+777)"
 )
+_PRIVILEGED_PATTERN = re.compile(r"(?i)\bsudo\s+")
 _DOCS_TESTS_PATTERN = re.compile(r"(?i)(readme|docs?/|documentation|test|pytest|spec)")
 _GOVERNANCE_PATH_PATTERN = re.compile(
     r"(?i)(^|[\s,;:/])("
@@ -63,6 +64,14 @@ def assess_task_risk(
             "approval_required": True,
             "blocked": False,
             "reasons": ["write task has no verification template or command"],
+        }
+
+    if _PRIVILEGED_PATTERN.search(text):
+        return {
+            "level": "high",
+            "approval_required": True,
+            "blocked": False,
+            "reasons": ["privileged command reference requires review"],
         }
 
     if _DOCS_TESTS_PATTERN.search(text):

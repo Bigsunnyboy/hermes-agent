@@ -369,7 +369,7 @@ def _extract_final_text(artifact_dir: Any) -> str:
         return ""
     if not candidates:
         return ""
-    return _clip(candidates[-1])
+    return _clip("\n\n".join(candidates))
 
 
 def _event_text(event: dict[str, Any]) -> str:

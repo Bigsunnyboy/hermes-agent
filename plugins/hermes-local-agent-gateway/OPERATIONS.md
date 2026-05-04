@@ -103,11 +103,19 @@ Important fields:
 - `worktree_root`: isolated Codex worktrees
 - `worktree_archive_root`: archived/removed worktrees
 - `session_root`: saved Codex session ids
+- `codex_env`: optional non-secret environment overrides for Codex subprocesses, for example proxy variables
+- `max_output_bytes`: per-stream cap for captured Codex stdout/stderr artifacts
 - `approval_allowed_user_ids`: optional Feishu open_id allowlist
 - `approval_allowed_chat_ids`: optional Feishu chat allowlist
 
 For a personal Feishu bot, leave the approval allowlists empty unless stricter
 approval routing is needed later.
+
+The cron worker runs every minute by default, but empty queue ticks do not wake
+the agent: the installed wake script returns `{"wakeAgent": false}` and Hermes
+skips the model run. Non-empty queue ticks intentionally wake the tool path so
+the active Feishu adapter can update the original approval card through
+RUNNING/DONE/FAILED.
 
 ## Upgrade Recovery
 

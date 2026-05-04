@@ -20,6 +20,8 @@ class GatewayConfig:
     max_worktree_bytes: int = 5 * 1024 * 1024 * 1024
     worker_cron_name: str = "codex-queue-worker"
     worker_cron_schedule: str = "every 1m"
+    codex_env: dict[str, str] | None = None
+    max_output_bytes: int = 10 * 1024 * 1024
     approval_allowed_user_ids: list[str] | None = None
     approval_allowed_chat_ids: list[str] | None = None
 
@@ -77,6 +79,8 @@ def load_config(config_path: Path | None = None) -> GatewayConfig:
         max_worktree_bytes=int(data.get("max_worktree_bytes", cfg.max_worktree_bytes)),
         worker_cron_name=str(data.get("worker_cron_name", cfg.worker_cron_name)),
         worker_cron_schedule=str(data.get("worker_cron_schedule", cfg.worker_cron_schedule)),
+        codex_env=_string_dict(data.get("codex_env", cfg.codex_env or {})),
+        max_output_bytes=int(data.get("max_output_bytes", cfg.max_output_bytes)),
         approval_allowed_user_ids=_string_list(
             data.get("approval_allowed_user_ids", cfg.approval_allowed_user_ids or [])
         ),
@@ -94,3 +98,13 @@ def _string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _string_dict(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(key).strip(): str(item)
+        for key, item in value.items()
+        if str(key).strip()
+    }

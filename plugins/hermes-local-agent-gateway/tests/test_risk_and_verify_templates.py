@@ -26,6 +26,19 @@ def test_write_risk_blocks_destructive_sensitive_prompt() -> None:
     assert "sensitive" in " ".join(risk["reasons"]).lower()
 
 
+def test_write_risk_treats_sudo_as_reviewable_not_blocked() -> None:
+    risk = assess_task_risk(
+        mode="write",
+        prompt="Document how to use sudo for a local service restart.",
+        verify_commands=["pytest"],
+    )
+
+    assert risk["level"] == "high"
+    assert risk["approval_required"] is True
+    assert risk["blocked"] is False
+    assert "privileged" in " ".join(risk["reasons"]).lower()
+
+
 def test_write_risk_blocks_governance_path_references() -> None:
     risk = assess_task_risk(
         mode="write",
