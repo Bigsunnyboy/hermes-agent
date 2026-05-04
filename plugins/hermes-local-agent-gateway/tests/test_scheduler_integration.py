@@ -303,6 +303,8 @@ def test_approved_write_queue_task_fails_on_changes_outside_allowlist(
 
 
 def test_ensure_worker_cron_job_creates_real_cron_prompt_when_missing(tmp_path: Path) -> None:
+    from hermes_local_agent_gateway.scheduler import WORKER_PROMPT_VERSION
+
     calls = []
 
     def fake_cron(**kwargs):
@@ -326,6 +328,7 @@ def test_ensure_worker_cron_job_creates_real_cron_prompt_when_missing(tmp_path: 
     assert create_call["schedule"] == "every 1m"
     assert create_call["enabled_toolsets"] == ["hermes_local_agent_gateway"]
     assert create_call["script"] == "codex_queue_worker_wake.py"
+    assert create_call["prompt"].startswith(f"[{WORKER_PROMPT_VERSION}]")
     assert "run_next_codex_task" in create_call["prompt"]
     assert "final result" in create_call["prompt"]
 
@@ -362,10 +365,11 @@ def test_ensure_worker_cron_job_reuses_existing_job_by_name(tmp_path: Path) -> N
 
 
 def test_ensure_worker_cron_job_reuses_formatted_cron_listing(tmp_path: Path) -> None:
-    from hermes_local_agent_gateway.scheduler import DEFAULT_WORKER_PROMPT
+    from hermes_local_agent_gateway.scheduler import DEFAULT_WORKER_PROMPT, WORKER_PROMPT_VERSION
 
     calls = []
     prompt_preview = DEFAULT_WORKER_PROMPT[:100] + "..."
+    assert prompt_preview.startswith(f"[{WORKER_PROMPT_VERSION}]")
 
     def fake_cron(**kwargs):
         calls.append(kwargs)
@@ -400,6 +404,40 @@ def test_ensure_worker_cron_job_reuses_formatted_cron_listing(tmp_path: Path) ->
         "name": "codex-queue-worker",
     }
     assert len(calls) == 1
+
+
+def test_ensure_worker_cron_job_updates_stale_prompt_version_preview(tmp_path: Path) -> None:
+    calls = []
+
+    def fake_cron(**kwargs):
+        calls.append(kwargs)
+        if kwargs["action"] == "list":
+            return json.dumps(
+                {
+                    "success": True,
+                    "jobs": [
+                        {
+                            "job_id": "job-existing",
+                            "name": "codex-queue-worker",
+                            "prompt_preview": "[gateway-worker-prompt:oldhash]\nUse the Hermes tool...",
+                            "script": "codex_queue_worker_wake.py",
+                            "enabled_toolsets": ["hermes_local_agent_gateway"],
+                        }
+                    ],
+                }
+            )
+        assert kwargs["action"] == "update"
+        return json.dumps({"success": True, "job": kwargs})
+
+    result = ensure_worker_cron_job(
+        cron_api=fake_cron,
+        name="codex-queue-worker",
+        schedule="every 1m",
+        scripts_dir=tmp_path / "scripts",
+    )
+
+    assert result["updated"] is True
+    assert calls[1]["prompt"].startswith("[gateway-worker-prompt:")
 
 
 def test_ensure_worker_cron_job_updates_stale_prompt(tmp_path: Path) -> None:

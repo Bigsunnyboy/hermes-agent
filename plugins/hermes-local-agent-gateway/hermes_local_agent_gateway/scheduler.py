@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Callable
@@ -11,12 +12,15 @@ from .runner import CodexCliRunner
 from .task_service import Runner, create_codex_task
 
 
-DEFAULT_WORKER_PROMPT = (
+_WORKER_PROMPT_BODY = (
     "Use the Hermes tool run_next_codex_task exactly once; it runs one queued task and "
     "auto-delivers the final result to the original Feishu chat when a delivery target exists. "
     "If it returns EMPTY, reply briefly that the Codex queue is empty. "
     "Do not use terminal or spawn Codex directly."
 )
+_WORKER_PROMPT_HASH = hashlib.sha256(_WORKER_PROMPT_BODY.encode("utf-8")).hexdigest()[:12]
+WORKER_PROMPT_VERSION = f"gateway-worker-prompt:{_WORKER_PROMPT_HASH}"
+DEFAULT_WORKER_PROMPT = f"[{WORKER_PROMPT_VERSION}]\n{_WORKER_PROMPT_BODY}"
 
 WAKE_SCRIPT_NAME = "codex_queue_worker_wake.py"
 WAKE_SCRIPT = '''from __future__ import annotations
@@ -198,10 +202,7 @@ def _job_prompt_matches(job: dict[str, Any]) -> bool:
     prompt_preview = job.get("prompt_preview")
     if not isinstance(prompt_preview, str):
         return False
-    expected_preview = DEFAULT_WORKER_PROMPT[:100]
-    if len(DEFAULT_WORKER_PROMPT) > 100:
-        expected_preview += "..."
-    return prompt_preview == expected_preview
+    return prompt_preview.startswith(f"[{WORKER_PROMPT_VERSION}]")
 
 
 def _default_scripts_dir() -> Path:

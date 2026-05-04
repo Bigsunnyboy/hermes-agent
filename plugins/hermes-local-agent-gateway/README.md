@@ -126,7 +126,7 @@ Run this once after enabling the plugin to install the real Hermes cron worker:
 ensure_codex_worker_cron
 ```
 
-The created cron job uses `~/.hermes/scripts/codex_queue_worker_wake.py` as a wake gate. Empty queues return `{"wakeAgent": false}` so Hermes skips the agent run; non-empty queues wake the cron job and call `run_next_codex_task` once. When a task came from Feishu, the queue record contains the original chat target, and `run_next_codex_task` sends the final summary back to that chat after Codex finishes.
+The created cron job uses `~/.hermes/scripts/codex_queue_worker_wake.py` as a wake gate. Empty queues return `{"wakeAgent": false}` so Hermes skips the agent run; non-empty queues wake the cron job and call `run_next_codex_task` once. The worker prompt starts with a computed `gateway-worker-prompt:<hash>` marker so `ensure_codex_worker_cron` can detect stale cron jobs even when Hermes only returns a shortened prompt preview. When a task came from Feishu, the queue record contains the original chat target, and `run_next_codex_task` sends the final summary back to that chat after Codex finishes.
 
 This means the one-minute schedule does not spend model tokens while the queue
 is empty. Non-empty queue ticks intentionally wake the Hermes agent instead of

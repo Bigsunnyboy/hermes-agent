@@ -115,7 +115,9 @@ The cron worker runs every minute by default, but empty queue ticks do not wake
 the agent: the installed wake script returns `{"wakeAgent": false}` and Hermes
 skips the model run. Non-empty queue ticks intentionally wake the tool path so
 the active Feishu adapter can update the original approval card through
-RUNNING/DONE/FAILED.
+RUNNING/DONE/FAILED. The worker prompt includes a computed
+`gateway-worker-prompt:<hash>` prefix so cron repair can detect stale prompt
+versions from Hermes' shortened `prompt_preview`.
 
 ## Upgrade Recovery
 
