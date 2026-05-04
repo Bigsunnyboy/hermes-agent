@@ -40,6 +40,14 @@ hermes plugins enable hermes-local-agent-gateway
 systemctl restart hermes-gateway.service
 ```
 
+For repeatable install, upgrade recovery, config generation, and worktree
+hygiene commands, see [OPERATIONS.md](OPERATIONS.md). The intended maintenance
+source is the Hermes source checkout; deploy with:
+
+```bash
+scripts/hermes-local-agent-gateway install --enable --restart
+```
+
 ## Tool Arguments
 
 ## Routing Model

@@ -1,0 +1,323 @@
+#!/usr/bin/env python3
+"""Operational helper for the local Hermes Codex gateway plugin.
+
+This script treats this source checkout as the source of truth and deploys
+the gateway plugin plus the small generic Feishu adapter hook patch into an
+installed Hermes home.
+"""
+
+from __future__ import annotations
+
+import argparse
+import filecmp
+import json
+import os
+import shutil
+import subprocess
+import sys
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+PLUGIN_NAME = "hermes-local-agent-gateway"
+CORE_PATCH_FILES = (
+    Path("gateway/platforms/feishu.py"),
+    Path("hermes_cli/plugins.py"),
+    Path("tests/gateway/test_feishu_approval_buttons.py"),
+    Path("tests/hermes_cli/test_plugins.py"),
+)
+REQUIRED_CORE_MARKERS = (
+    ("hermes_cli/plugins.py", "feishu_card_action_response"),
+    ("gateway/platforms/feishu.py", "edit_interactive_card"),
+    ("gateway/platforms/feishu.py", "_build_plugin_card_action_response"),
+    ("gateway/platforms/feishu.py", "PatchMessageRequest"),
+)
+
+
+@dataclass(frozen=True)
+class Layout:
+    source_root: Path
+    hermes_home: Path
+    install_dir: Path
+
+    @property
+    def source_plugin(self) -> Path:
+        return self.source_root / "plugins" / PLUGIN_NAME
+
+    @property
+    def installed_plugin(self) -> Path:
+        return self.hermes_home / "plugins" / PLUGIN_NAME
+
+    @property
+    def backup_root(self) -> Path:
+        return self.hermes_home / "backups" / PLUGIN_NAME
+
+    @property
+    def queue_root(self) -> Path:
+        return self.hermes_home / "agent_queue"
+
+    @property
+    def worktree_root(self) -> Path:
+        return self.hermes_home / "worktrees"
+
+    @property
+    def config_path(self) -> Path:
+        return self.installed_plugin / "config.json"
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Deploy and inspect the Hermes local Codex gateway.")
+    parser.add_argument(
+        "--source-root",
+        type=Path,
+        default=Path(__file__).resolve().parents[1],
+        help="Hermes source checkout. Defaults to this script's repository root.",
+    )
+    parser.add_argument(
+        "--hermes-home",
+        type=Path,
+        default=Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")),
+        help="Hermes data directory. Defaults to HERMES_HOME or ~/.hermes.",
+    )
+    parser.add_argument(
+        "--install-dir",
+        type=Path,
+        default=None,
+        help="Installed Hermes source directory. Defaults to <hermes-home>/hermes-agent.",
+    )
+
+    sub = parser.add_subparsers(dest="command", required=True)
+    install_cmd = sub.add_parser("install", help="Install or update the plugin and core hook files.")
+    install_cmd.add_argument("--no-core", action="store_true", help="Only deploy the plugin, not core hook files.")
+    install_cmd.add_argument("--force-config", action="store_true", help="Overwrite existing plugin config.json.")
+    install_cmd.add_argument("--enable", action="store_true", help="Run `hermes plugins enable hermes-local-agent-gateway`.")
+    install_cmd.add_argument("--restart", action="store_true", help="Restart hermes-gateway.service after install.")
+
+    sub.add_parser("write-config", help="Create plugin config.json if it is missing.")
+    sub.add_parser("status", help="Print deployment status as JSON.")
+    sub.add_parser("doctor", help="Run status checks and return non-zero on missing pieces.")
+
+    cleanup_cmd = sub.add_parser("cleanup-worktrees", help="List or remove old managed worktrees.")
+    cleanup_cmd.add_argument("--keep", type=int, default=5, help="Keep the newest N worktrees per repository.")
+    cleanup_cmd.add_argument("--apply", action="store_true", help="Actually remove old worktree directories.")
+
+    args = parser.parse_args(argv)
+    layout = _layout(args)
+
+    if args.command == "install":
+        _install(layout, sync_core=not args.no_core, force_config=args.force_config)
+        if args.enable:
+            _run(["hermes", "plugins", "enable", PLUGIN_NAME], check=False)
+        if args.restart:
+            _run(["systemctl", "restart", "hermes-gateway.service"], check=False)
+        return 0
+    if args.command == "write-config":
+        _write_config(layout, force=False)
+        return 0
+    if args.command == "status":
+        print(json.dumps(_status(layout), indent=2, ensure_ascii=False))
+        return 0
+    if args.command == "doctor":
+        status = _status(layout)
+        print(json.dumps(status, indent=2, ensure_ascii=False))
+        return 0 if _doctor_ok(status) else 1
+    if args.command == "cleanup-worktrees":
+        report = _cleanup_worktrees(layout, keep=args.keep, apply=args.apply)
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+        return 0
+    parser.error(f"Unsupported command: {args.command}")
+    return 2
+
+
+def _layout(args: argparse.Namespace) -> Layout:
+    hermes_home = args.hermes_home.expanduser().resolve()
+    install_dir = args.install_dir or (hermes_home / "hermes-agent")
+    return Layout(
+        source_root=args.source_root.expanduser().resolve(),
+        hermes_home=hermes_home,
+        install_dir=install_dir.expanduser().resolve(),
+    )
+
+
+def _install(layout: Layout, *, sync_core: bool, force_config: bool) -> None:
+    _require_dir(layout.source_plugin, "source plugin")
+    _copy_tree(layout.source_plugin, layout.installed_plugin)
+    _write_config(layout, force=force_config)
+    if sync_core:
+        _sync_core_files(layout)
+    print(f"installed_plugin={layout.installed_plugin}")
+    print(f"config={layout.config_path}")
+
+
+def _copy_tree(source: Path, target: Path) -> None:
+    if target.exists():
+        shutil.rmtree(target)
+    ignore = shutil.ignore_patterns("__pycache__", "*.pyc", "config.json")
+    shutil.copytree(source, target, ignore=ignore)
+
+
+def _write_config(layout: Layout, *, force: bool) -> None:
+    example = layout.source_plugin / "config.example.json"
+    _require_file(example, "plugin config example")
+    layout.installed_plugin.mkdir(parents=True, exist_ok=True)
+    if layout.config_path.exists() and not force:
+        print(f"config_exists={layout.config_path}")
+        return
+    data = json.loads(example.read_text(encoding="utf-8"))
+    data.setdefault("workspace_roots", ["/home/projects"])
+    data.setdefault("repo_aliases", {"data-agent": "/home/projects/data-agent"})
+    data["artifact_root"] = str(layout.hermes_home / "agent_tasks")
+    data["worktree_root"] = str(layout.hermes_home / "worktrees")
+    data["worktree_archive_root"] = str(layout.hermes_home / "worktree_archives")
+    data["session_root"] = str(layout.hermes_home / "agent_sessions")
+    layout.config_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    print(f"config_written={layout.config_path}")
+
+
+def _sync_core_files(layout: Layout) -> None:
+    _require_dir(layout.install_dir, "installed Hermes source")
+    backup_dir = layout.backup_root / _timestamp()
+    copied: list[str] = []
+    for rel_path in CORE_PATCH_FILES:
+        source = layout.source_root / rel_path
+        target = layout.install_dir / rel_path
+        _require_file(source, f"source core file {rel_path}")
+        if target.exists() and filecmp.cmp(source, target, shallow=False):
+            continue
+        if target.exists():
+            backup_path = backup_dir / rel_path
+            backup_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(target, backup_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        copied.append(str(rel_path))
+    if copied:
+        print(f"core_files_synced={copied}")
+        print(f"backup_dir={backup_dir}")
+    else:
+        print("core_files_synced=[]")
+
+
+def _status(layout: Layout) -> dict[str, object]:
+    core = {str(path): _file_markers(layout.install_dir / path) for path in CORE_PATCH_FILES}
+    marker_status = {
+        f"{rel}:{marker}": marker in core.get(rel, "")
+        for rel, marker in REQUIRED_CORE_MARKERS
+    }
+    queue_count = _count_files(layout.queue_root, "queued_*.json")
+    worktree_count = _count_worktrees(layout.worktree_root)
+    return {
+        "source_root": str(layout.source_root),
+        "hermes_home": str(layout.hermes_home),
+        "install_dir": str(layout.install_dir),
+        "source_plugin_exists": layout.source_plugin.is_dir(),
+        "installed_plugin_exists": layout.installed_plugin.is_dir(),
+        "config_exists": layout.config_path.is_file(),
+        "plugin_enabled_in_config": _plugin_enabled(layout.hermes_home / "config.yaml"),
+        "core_markers": marker_status,
+        "queue_count": queue_count,
+        "worktree_count": worktree_count,
+        "gateway_service": _systemctl_state(),
+    }
+
+
+def _file_markers(path: Path) -> str:
+    if not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8", errors="ignore")
+
+
+def _plugin_enabled(config_path: Path) -> bool:
+    if not config_path.exists():
+        return False
+    return PLUGIN_NAME in config_path.read_text(encoding="utf-8", errors="ignore")
+
+
+def _systemctl_state() -> dict[str, str]:
+    result = _run(
+        ["systemctl", "show", "hermes-gateway.service", "--property=ActiveState,SubState,UnitFileState", "--no-pager"],
+        check=False,
+        capture=True,
+    )
+    state: dict[str, str] = {"returncode": str(result.returncode)}
+    for line in result.stdout.splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            state[key] = value
+    if result.stderr.strip():
+        state["stderr"] = result.stderr.strip()
+    return state
+
+
+def _doctor_ok(status: dict[str, object]) -> bool:
+    markers = status.get("core_markers")
+    return bool(
+        status.get("source_plugin_exists")
+        and status.get("installed_plugin_exists")
+        and status.get("config_exists")
+        and isinstance(markers, dict)
+        and all(markers.values())
+    )
+
+
+def _cleanup_worktrees(layout: Layout, *, keep: int, apply: bool) -> dict[str, object]:
+    root = layout.worktree_root
+    planned: list[str] = []
+    if not root.exists():
+        return {"worktree_root": str(root), "removed": [], "planned": []}
+    for repo_dir in sorted(path for path in root.iterdir() if path.is_dir()):
+        worktrees = sorted(
+            (path for path in repo_dir.iterdir() if path.is_dir()),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        for old_path in worktrees[max(keep, 0) :]:
+            planned.append(str(old_path))
+            if apply:
+                shutil.rmtree(old_path)
+    return {"worktree_root": str(root), "planned": planned, "removed": planned if apply else []}
+
+
+def _count_files(root: Path, pattern: str) -> int:
+    if not root.exists():
+        return 0
+    return sum(1 for _ in root.glob(pattern))
+
+
+def _count_worktrees(root: Path) -> int:
+    if not root.exists():
+        return 0
+    count = 0
+    for repo_dir in root.iterdir():
+        if repo_dir.is_dir():
+            count += sum(1 for path in repo_dir.iterdir() if path.is_dir())
+    return count
+
+
+def _run(args: list[str], *, check: bool, capture: bool = False) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        args,
+        check=check,
+        text=True,
+        stdout=subprocess.PIPE if capture else None,
+        stderr=subprocess.PIPE if capture else None,
+    )
+
+
+def _timestamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _require_file(path: Path, label: str) -> None:
+    if not path.is_file():
+        raise FileNotFoundError(f"Missing {label}: {path}")
+
+
+def _require_dir(path: Path, label: str) -> None:
+    if not path.is_dir():
+        raise FileNotFoundError(f"Missing {label}: {path}")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

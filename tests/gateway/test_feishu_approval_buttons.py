@@ -226,7 +226,11 @@ class TestFeishuExecApproval:
         adapter._client.im.v1.message.patch.return_value = response
         card = {"config": {"wide_screen_mode": True}, "elements": []}
 
-        result = await adapter.edit_interactive_card("oc_123", "om_card", card)
+        async def run_sync(func, *args):
+            return func(*args)
+
+        with patch.object(feishu_module.asyncio, "to_thread", side_effect=run_sync):
+            result = await adapter.edit_interactive_card("oc_123", "om_card", card)
 
         assert result.success is True
         assert result.message_id == "om_card"
