@@ -97,6 +97,8 @@ try:
         GetMessageRequest,
         GetMessageResourceRequest,
         P2ImMessageMessageReadV1,
+        PatchMessageRequest,
+        PatchMessageRequestBody,
         ReplyMessageRequest,
         ReplyMessageRequestBody,
         UpdateMessageRequest,
@@ -116,6 +118,8 @@ try:
 except ImportError:
     FEISHU_AVAILABLE = False
     lark = None  # type: ignore[assignment]
+    PatchMessageRequest = None  # type: ignore[assignment]
+    PatchMessageRequestBody = None  # type: ignore[assignment]
     CallBackCard = None  # type: ignore[assignment]
     P2CardActionTriggerResponse = None  # type: ignore[assignment]
     EventDispatcherHandler = None  # type: ignore[assignment]
@@ -1783,6 +1787,30 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.error("[Feishu] Failed to edit message %s: %s", message_id, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
+    async def edit_interactive_card(
+        self,
+        chat_id: str,
+        message_id: str,
+        card: Dict[str, Any],
+        *,
+        finalize: bool = False,
+    ) -> SendResult:
+        """Edit a previously sent Feishu interactive card with raw card JSON."""
+        del chat_id, finalize
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        try:
+            body = self._build_patch_message_body(content=json.dumps(card, ensure_ascii=False))
+            request = self._build_patch_message_request(message_id=message_id, request_body=body)
+            response = await asyncio.to_thread(self._client.im.v1.message.patch, request)
+            result = self._finalize_send_result(response, "interactive card update failed")
+            if result.success:
+                result.message_id = message_id
+            return result
+        except Exception as exc:
+            logger.error("[Feishu] Failed to edit interactive card %s: %s", message_id, exc, exc_info=True)
+            return SendResult(success=False, error=str(exc))
+
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
@@ -2373,7 +2401,10 @@ class FeishuAdapter(BasePlatformAdapter):
         if hermes_action:
             return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
 
+        plugin_response = self._build_plugin_card_action_response(event=event, action_value=action_value)
         self._submit_on_loop(loop, self._handle_card_action_event(data))
+        if plugin_response is not None:
+            return plugin_response
         if P2CardActionTriggerResponse is None:
             return None
         return P2CardActionTriggerResponse()
@@ -2411,6 +2442,45 @@ class FeishuAdapter(BasePlatformAdapter):
             card.data = self._build_resolved_approval_card(choice=choice, user_name=user_name)
             response.card = card
         return response
+
+    def _build_plugin_card_action_response(self, *, event: Any, action_value: Dict[str, Any]) -> Any:
+        """Let plugins provide an inline Feishu card response for custom card actions."""
+        if P2CardActionTriggerResponse is None:
+            return None
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+
+            context = getattr(event, "context", None)
+            operator = getattr(event, "operator", None)
+            open_id = str(getattr(operator, "open_id", "") or "")
+            results = _invoke_hook(
+                "feishu_card_action_response",
+                adapter=self,
+                event=event,
+                action=getattr(event, "action", None),
+                action_value=action_value,
+                chat_id=str(getattr(context, "open_chat_id", "") or ""),
+                operator_open_id=open_id,
+                operator_name=self._get_cached_sender_name(open_id) or open_id,
+            )
+        except Exception:
+            logger.debug("[Feishu] Plugin card action response hook failed", exc_info=True)
+            return None
+
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            card_data = result.get("card") or result.get("callback_card")
+            if not isinstance(card_data, dict):
+                continue
+            response = P2CardActionTriggerResponse()
+            if CallBackCard is not None:
+                card = CallBackCard()
+                card.type = "raw"
+                card.data = card_data
+                response.card = card
+            return response
+        return None
 
     async def _resolve_approval(self, approval_id: Any, choice: str, user_name: str) -> None:
         """Pop approval state and unblock the waiting agent thread."""
@@ -2922,18 +2992,13 @@ class FeishuAdapter(BasePlatformAdapter):
                 },
             )
             response.raise_for_status()
-            # Snapshot Content-Type and body while the client context is
-            # still active so pooled connections fully release on exit.
-            # See #18451.
-            content_type_hdr = str(response.headers.get("Content-Type", ""))
-            body = response.content
         filename = self._derive_remote_filename(
             file_url,
-            content_type=content_type_hdr,
+            content_type=str(response.headers.get("Content-Type", "")),
             default_name=preferred_name,
             default_ext=default_ext,
         )
-        cached_path = cache_document_from_bytes(body, filename)
+        cached_path = cache_document_from_bytes(response.content, filename)
         return cached_path, filename
 
     @staticmethod
@@ -4355,6 +4420,23 @@ class FeishuAdapter(BasePlatformAdapter):
         if "UpdateMessageRequest" in globals():
             return (
                 UpdateMessageRequest.builder()
+                .message_id(message_id)
+                .request_body(request_body)
+                .build()
+            )
+        return SimpleNamespace(message_id=message_id, request_body=request_body)
+
+    @staticmethod
+    def _build_patch_message_body(*, content: str) -> Any:
+        if "PatchMessageRequestBody" in globals() and PatchMessageRequestBody is not None:
+            return PatchMessageRequestBody.builder().content(content).build()
+        return SimpleNamespace(content=content)
+
+    @staticmethod
+    def _build_patch_message_request(message_id: str, request_body: Any) -> Any:
+        if "PatchMessageRequest" in globals() and PatchMessageRequest is not None:
+            return (
+                PatchMessageRequest.builder()
                 .message_id(message_id)
                 .request_body(request_body)
                 .build()

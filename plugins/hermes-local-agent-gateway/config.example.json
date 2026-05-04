@@ -1,0 +1,19 @@
+{
+  "workspace_roots": [
+    "/home/projects"
+  ],
+  "repo_aliases": {
+    "data-agent": "/home/projects/data-agent"
+  },
+  "artifact_root": "/root/.hermes/agent_tasks",
+  "worktree_root": "/root/.hermes/worktrees",
+  "worktree_archive_root": "/root/.hermes/worktree_archives",
+  "session_root": "/root/.hermes/agent_sessions",
+  "codex_executable": "codex",
+  "max_workspaces": 20,
+  "max_worktree_bytes": 5368709120,
+  "worker_cron_name": "codex-queue-worker",
+  "worker_cron_schedule": "every 1m",
+  "approval_allowed_user_ids": [],
+  "approval_allowed_chat_ids": []
+}
