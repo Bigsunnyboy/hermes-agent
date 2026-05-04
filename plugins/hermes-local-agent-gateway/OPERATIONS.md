@@ -8,11 +8,21 @@ Use this source checkout as the maintenance source of truth:
 <hermes-agent-source>/plugins/hermes-local-agent-gateway
 ```
 
-Deploy it into the active Hermes installation:
+Deploy it into the active Hermes user plugin directory:
 
 ```text
 ~/.hermes/plugins/hermes-local-agent-gateway
 ```
+
+Do not deploy this custom plugin into the Hermes bundled plugin directory:
+
+```text
+~/.hermes/hermes-agent/plugins/hermes-local-agent-gateway
+```
+
+That directory is for plugins shipped with the Hermes source tree. This gateway
+is a user plugin at runtime, even if its source is maintained in a local Hermes
+checkout.
 
 The plugin owns Codex task policy, queueing, approval, worktree isolation,
 verification, and result delivery. The Hermes core patch surface is deliberately
@@ -26,6 +36,15 @@ From the Hermes source checkout:
 scripts/hermes-local-agent-gateway install --enable --restart
 ```
 
+If you run the installed copy of this script from `~/.hermes/hermes-agent`,
+pass the maintenance checkout explicitly:
+
+```bash
+~/.hermes/hermes-agent/scripts/hermes-local-agent-gateway \
+  --source-root /mnt/e/module/py/hermes-agent \
+  install --enable --restart
+```
+
 What it does:
 
 1. Copies `plugins/hermes-local-agent-gateway/` into `~/.hermes/plugins/`.
@@ -33,6 +52,9 @@ What it does:
 3. Syncs the generic Feishu hook files into `~/.hermes/hermes-agent`.
 4. Backs up overwritten core files under `~/.hermes/backups/hermes-local-agent-gateway/<timestamp>/`.
 5. Optionally enables the plugin and restarts `hermes-gateway.service`.
+
+It does not create or require
+`~/.hermes/hermes-agent/plugins/hermes-local-agent-gateway`.
 
 Use `--no-core` if the installed Hermes already contains the Feishu hook patch.
 
@@ -45,14 +67,19 @@ scripts/hermes-local-agent-gateway doctor
 
 `status` prints JSON with:
 
-- source and installed plugin paths
+- source and runtime plugin paths
+- the forbidden bundled-plugin path and whether it exists
 - plugin config presence
 - whether `~/.hermes/config.yaml` mentions the plugin
 - required Feishu hook markers
 - queue and worktree counts
 - systemd gateway state
 
-`doctor` returns non-zero when required deployment pieces are missing.
+`doctor` returns non-zero when required runtime deployment pieces are missing.
+It also fails if the custom plugin exists under the Hermes bundled plugin
+directory, because that indicates the user-plugin boundary has been violated.
+The source plugin path is reported for operator visibility, but it is only
+required for `install`.
 
 ## Config
 
@@ -148,6 +175,8 @@ Normal write approval should use the Feishu card buttons.
 - Keep Codex queue, approval, runner, worktree, verification, and delivery logic
   in this plugin.
 - Keep Hermes core changes generic and Feishu-adapter scoped.
+- Keep the runtime plugin under `~/.hermes/plugins/`; never under
+  `~/.hermes/hermes-agent/plugins/`.
 - Do not put Feishu tokens or Codex credentials in this plugin config.
 - Do not edit valuable project repositories without `mode=write`, approval,
   `allow=...`, and a verification template.

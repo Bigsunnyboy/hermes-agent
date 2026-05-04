@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Operational helper for the local Hermes Codex gateway plugin.
 
-This script treats this source checkout as the source of truth and deploys
-the gateway plugin plus the small generic Feishu adapter hook patch into an
-installed Hermes home.
+This script treats a Hermes source checkout as the source of truth and deploys
+the gateway plugin into the Hermes *user plugin* directory. It may also sync
+the small generic Feishu adapter hook patch into an installed Hermes checkout.
+It intentionally never installs this custom plugin under the Hermes bundled
+plugin directory.
 """
 
 from __future__ import annotations
@@ -33,6 +35,7 @@ REQUIRED_CORE_MARKERS = (
     ("gateway/platforms/feishu.py", "_build_plugin_card_action_response"),
     ("gateway/platforms/feishu.py", "PatchMessageRequest"),
 )
+FORBIDDEN_BUNDLED_PLUGIN_REL = Path("plugins") / PLUGIN_NAME
 
 
 @dataclass(frozen=True)
@@ -46,8 +49,12 @@ class Layout:
         return self.source_root / "plugins" / PLUGIN_NAME
 
     @property
-    def installed_plugin(self) -> Path:
+    def runtime_plugin(self) -> Path:
         return self.hermes_home / "plugins" / PLUGIN_NAME
+
+    @property
+    def forbidden_bundled_plugin(self) -> Path:
+        return self.install_dir / FORBIDDEN_BUNDLED_PLUGIN_REL
 
     @property
     def backup_root(self) -> Path:
@@ -63,7 +70,7 @@ class Layout:
 
     @property
     def config_path(self) -> Path:
-        return self.installed_plugin / "config.json"
+        return self.runtime_plugin / "config.json"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -72,7 +79,10 @@ def main(argv: list[str] | None = None) -> int:
         "--source-root",
         type=Path,
         default=Path(__file__).resolve().parents[1],
-        help="Hermes source checkout. Defaults to this script's repository root.",
+        help=(
+            "Hermes source checkout that contains plugins/hermes-local-agent-gateway. "
+            "Defaults to this script's repository root."
+        ),
     )
     parser.add_argument(
         "--hermes-home",
@@ -142,25 +152,29 @@ def _layout(args: argparse.Namespace) -> Layout:
 
 def _install(layout: Layout, *, sync_core: bool, force_config: bool) -> None:
     _require_dir(layout.source_plugin, "source plugin")
-    _copy_tree(layout.source_plugin, layout.installed_plugin)
+    _copy_tree(layout.source_plugin, layout.runtime_plugin)
     _write_config(layout, force=force_config)
     if sync_core:
         _sync_core_files(layout)
-    print(f"installed_plugin={layout.installed_plugin}")
+    print(f"runtime_plugin={layout.runtime_plugin}")
     print(f"config={layout.config_path}")
 
 
 def _copy_tree(source: Path, target: Path) -> None:
+    existing_config = target / "config.json"
+    config_bytes = existing_config.read_bytes() if existing_config.is_file() else None
     if target.exists():
         shutil.rmtree(target)
     ignore = shutil.ignore_patterns("__pycache__", "*.pyc", "config.json")
     shutil.copytree(source, target, ignore=ignore)
+    if config_bytes is not None:
+        existing_config.write_bytes(config_bytes)
 
 
 def _write_config(layout: Layout, *, force: bool) -> None:
-    example = layout.source_plugin / "config.example.json"
+    example = _config_example(layout)
     _require_file(example, "plugin config example")
-    layout.installed_plugin.mkdir(parents=True, exist_ok=True)
+    layout.runtime_plugin.mkdir(parents=True, exist_ok=True)
     if layout.config_path.exists() and not force:
         print(f"config_exists={layout.config_path}")
         return
@@ -211,8 +225,12 @@ def _status(layout: Layout) -> dict[str, object]:
         "source_root": str(layout.source_root),
         "hermes_home": str(layout.hermes_home),
         "install_dir": str(layout.install_dir),
+        "source_plugin": str(layout.source_plugin),
+        "runtime_plugin": str(layout.runtime_plugin),
+        "forbidden_bundled_plugin": str(layout.forbidden_bundled_plugin),
         "source_plugin_exists": layout.source_plugin.is_dir(),
-        "installed_plugin_exists": layout.installed_plugin.is_dir(),
+        "runtime_plugin_exists": layout.runtime_plugin.is_dir(),
+        "forbidden_bundled_plugin_exists": layout.forbidden_bundled_plugin.exists(),
         "config_exists": layout.config_path.is_file(),
         "plugin_enabled_in_config": _plugin_enabled(layout.hermes_home / "config.yaml"),
         "core_markers": marker_status,
@@ -253,12 +271,19 @@ def _systemctl_state() -> dict[str, str]:
 def _doctor_ok(status: dict[str, object]) -> bool:
     markers = status.get("core_markers")
     return bool(
-        status.get("source_plugin_exists")
-        and status.get("installed_plugin_exists")
+        status.get("runtime_plugin_exists")
+        and not status.get("forbidden_bundled_plugin_exists")
         and status.get("config_exists")
         and isinstance(markers, dict)
         and all(markers.values())
     )
+
+
+def _config_example(layout: Layout) -> Path:
+    source_example = layout.source_plugin / "config.example.json"
+    if source_example.is_file():
+        return source_example
+    return layout.runtime_plugin / "config.example.json"
 
 
 def _cleanup_worktrees(layout: Layout, *, keep: int, apply: bool) -> dict[str, object]:
